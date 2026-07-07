@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""check_links — validate links in markdown documentation.
+
+Checks, per .md file:
+- inline links/images: relative paths exist, anchors resolve (GitHub slug rules)
+- reference-style links point to defined labels; definitions have valid targets
+- mermaid code fences start with a known diagram type
+- external http(s) links respond (only with --external)
+
+Exit 0 = clean, 1 = problems found. No third-party dependencies.
+"""
+
+import argparse
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+INLINE_LINK = re.compile(r"!?\[(?:[^\]\\]|\\.)*\]\(\s*<?([^)<>\s]+)>?(?:\s+[\"'][^\"']*[\"'])?\s*\)")
+REF_DEF = re.compile(r"^\s{0,3}\[([^\]]+)\]:\s*(\S+)")
+REF_USE = re.compile(r"\[(?:[^\]\\]|\\.)+\]\[([^\]]*)\]")
+HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+HTML_ANCHOR = re.compile(r"<a\s+(?:name|id)=[\"']([^\"']+)[\"']")
+FENCE = re.compile(r"^\s{0,3}(```+|~~~+)\s*(\S*)")
+
+MERMAID_TYPES = {
+    "flowchart", "graph", "sequencediagram", "classdiagram", "statediagram",
+    "statediagram-v2", "erdiagram", "gantt", "pie", "mindmap", "journey",
+    "timeline", "quadrantchart", "gitgraph", "requirementdiagram", "c4context",
+    "sankey-beta", "xychart-beta", "block-beta", "packet-beta", "architecture-beta",
+    "kanban", "zenuml",
+}
+
+
+def slugify(heading):
+    """GitHub-style heading slug."""
+    text = heading
+    text = re.sub(r"`([^`]*)`", r"\1", text)                    # inline code
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)      # links -> text
+    text = re.sub(r"[*_~]", "", text)                            # emphasis markers
+    text = text.strip().lower()
+    text = re.sub(r"[^\w\- ]", "", text, flags=re.UNICODE)
+    return text.replace(" ", "-")
+
+
+class MarkdownFile:
+    def __init__(self, path):
+        self.path = path
+        self.links = []      # (lineno, target)
+        self.ref_defs = {}   # label -> (lineno, target)
+        self.ref_uses = []   # (lineno, label)
+        self.anchors = set()
+        self.problems = []   # (lineno, message)
+        self._parse()
+
+    def _parse(self):
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as e:
+            self.problems.append((0, f"unreadable: {e}"))
+            return
+        slug_counts = {}
+        fence = None  # (marker, info) while inside a fenced block
+        fence_start = 0
+        for lineno, line in enumerate(lines, 1):
+            m = FENCE.match(line)
+            if fence:
+                if m and m.group(1)[0] == fence[0][0] and len(m.group(1)) >= len(fence[0]):
+                    fence = None
+                continue
+            if m:
+                fence = (m.group(1), m.group(2).lower())
+                fence_start = lineno
+                if fence[1] == "mermaid":
+                    self._check_mermaid(lines, lineno, fence[0])
+                continue
+
+            h = HEADING.match(line)
+            if h:
+                slug = slugify(h.group(2))
+                n = slug_counts.get(slug, 0)
+                slug_counts[slug] = n + 1
+                self.anchors.add(slug if n == 0 else f"{slug}-{n}")
+            for a in HTML_ANCHOR.finditer(line):
+                self.anchors.add(a.group(1))
+
+            d = REF_DEF.match(line)
+            if d:
+                self.ref_defs[d.group(1).lower()] = (lineno, d.group(2).strip("<>"))
+                continue
+            stripped = re.sub(r"`[^`]*`", "", line)  # ignore links inside inline code
+            for l in INLINE_LINK.finditer(stripped):
+                self.links.append((lineno, l.group(1)))
+            for u in REF_USE.finditer(stripped):
+                if u.group(1):  # [text][label]; empty label ([text][]) uses text, skip
+                    self.ref_uses.append((lineno, u.group(1).lower()))
+        if fence:
+            self.problems.append((fence_start, "unclosed code fence"))
+
+    def _check_mermaid(self, lines, fence_line, marker):
+        for line in lines[fence_line:]:
+            if FENCE.match(line) and line.lstrip().startswith(marker[0]):
+                self.problems.append((fence_line, "empty mermaid block"))
+                return
+            word = line.strip().split(" ")[0].rstrip(":").lower()
+            if not word or word.startswith("%%"):
+                continue
+            if word not in MERMAID_TYPES:
+                self.problems.append(
+                    (fence_line, f"mermaid block starts with unknown diagram type {word!r}"))
+            return
+
+
+def check_target(md, target, root, external, cache):
+    """Return problem string or None."""
+    parsed = urllib.parse.urlsplit(target)
+    if parsed.scheme in ("http", "https"):
+        if not external:
+            return None
+        return check_external(target, cache)
+    if parsed.scheme:  # mailto:, etc.
+        return None
+
+    path_part = urllib.parse.unquote(parsed.path)
+    fragment = urllib.parse.unquote(parsed.fragment)
+
+    if not path_part:  # same-file anchor
+        if fragment and fragment.lower() not in md.anchors:
+            return f"anchor #{fragment} not found in this file"
+        return None
+
+    if path_part.startswith("/"):
+        dest = (root / path_part.lstrip("/")).resolve()
+    else:
+        dest = (md.path.parent / path_part).resolve()
+    if not dest.exists():
+        return f"file not found: {path_part}"
+    if fragment:
+        if dest.is_dir():
+            return f"anchor #{fragment} on a directory link"
+        if dest.suffix.lower() in (".md", ".markdown"):
+            other = cache.setdefault(("md", dest), MarkdownFile(dest))
+            if fragment.lower() not in other.anchors:
+                return f"anchor #{fragment} not found in {path_part}"
+    return None
+
+
+def check_external(url, cache):
+    key = ("url", url)
+    if key not in cache:
+        cache[key] = fetch_status(url)
+    return cache[key]
+
+
+def fetch_status(url):
+    for method in ("HEAD", "GET"):
+        req = urllib.request.Request(url, method=method, headers={"User-Agent": "agentix-scribe-linkcheck/0.1"})
+        try:
+            with urllib.request.urlopen(req, timeout=8):
+                return None
+        except urllib.error.HTTPError as e:
+            if method == "HEAD" and e.code in (403, 405, 501):
+                continue  # server dislikes HEAD; retry with GET
+            return f"external link returned HTTP {e.code}"
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            return f"external link unreachable ({getattr(e, 'reason', e)})"
+    return None
+
+
+def collect_files(paths):
+    files = []
+    for p in paths:
+        p = Path(p)
+        if p.is_dir():
+            files.extend(sorted(p.rglob("*.md")))
+        elif p.exists():
+            files.append(p)
+        else:
+            print(f"{p}: path does not exist", file=sys.stderr)
+    return files
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="check_links", description=__doc__)
+    parser.add_argument("paths", nargs="*", default=["docs"],
+                        help="markdown files or directories (default: docs)")
+    parser.add_argument("--external", action="store_true",
+                        help="also verify http(s) links (slow, network)")
+    parser.add_argument("--root", default=".",
+                        help="repo root for /-absolute links (default: cwd)")
+    args = parser.parse_args()
+
+    root = Path(args.root).resolve()
+    files = collect_files(args.paths)
+    if not files:
+        print("no markdown files found", file=sys.stderr)
+        sys.exit(0)
+
+    cache = {}
+    problems = 0
+    for path in files:
+        md = cache.setdefault(("md", path.resolve()), MarkdownFile(path.resolve()))
+        issues = list(md.problems)
+        for lineno, target in md.links:
+            msg = check_target(md, target, root, args.external, cache)
+            if msg:
+                issues.append((lineno, f"broken link '{target}': {msg}"))
+        for lineno, label in md.ref_uses:
+            if label not in md.ref_defs:
+                issues.append((lineno, f"reference link label '{label}' is never defined"))
+        for label, (lineno, target) in md.ref_defs.items():
+            msg = check_target(md, target, root, args.external, cache)
+            if msg:
+                issues.append((lineno, f"broken reference '{label}' -> '{target}': {msg}"))
+        for lineno, msg in sorted(issues):
+            try:
+                rel = path.resolve().relative_to(Path.cwd())
+            except ValueError:
+                rel = path
+            print(f"{rel}:{lineno}: {msg}")
+            problems += 1
+
+    if problems:
+        print(f"\n{problems} problem(s) found", file=sys.stderr)
+        sys.exit(1)
+    print(f"{len(files)} file(s) checked, all links OK", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

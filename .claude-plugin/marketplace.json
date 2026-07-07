@@ -10,6 +10,12 @@
       "description": "Long-term memory: SQLite + FTS5 + vector search, auto-recall hooks, remember/recall skills.",
       "source": "./memory",
       "category": "productivity"
+    },
+    {
+      "name": "scribe",
+      "description": "Docs discipline: clean markdown under ./docs, mermaid for flows/hierarchy, auto link-check after every docs edit.",
+      "source": "./scribe",
+      "category": "productivity"
     }
   ]
 }
