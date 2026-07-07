@@ -1,6 +1,9 @@
 # agentix
 
-Agent tools. The repo doubles as a Claude Code plugin marketplace:
+Agent tools. The repo doubles as a Claude Code plugin marketplace.
+Full documentation in [docs/](docs/README.md).
+
+Install:
 
 ```
 /plugin marketplace add /home/wouter/Work/agentix
