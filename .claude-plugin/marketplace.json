@@ -1,0 +1,15 @@
+{
+  "name": "agentix",
+  "description": "Agent tools by Wouter: memory, and more to come.",
+  "owner": {
+    "name": "Wouter de Vos"
+  },
+  "plugins": [
+    {
+      "name": "memory",
+      "description": "Long-term memory: SQLite + FTS5 + vector search, auto-recall hooks, remember/recall skills.",
+      "source": "./memory",
+      "category": "productivity"
+    }
+  ]
+}

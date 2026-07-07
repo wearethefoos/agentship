@@ -1,0 +1,34 @@
+{
+  "name": "memory",
+  "description": "Long-term memory for Claude Code: SQLite storage with full-text (FTS5) and vector search, auto-recall hooks, and remember/recall skills.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Wouter de Vos"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
+            "timeout": 15,
+            "statusMessage": "Loading memories..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/recall.py\"",
+            "timeout": 10,
+            "statusMessage": "Recalling memories..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""agentix memory — SQLite-backed long-term memory with full-text and vector search.
+
+Storage: ~/.config/agentix/memory/memory.db (override with AGENTIX_MEMORY_DIR).
+No third-party dependencies; embeddings come from Ollama or any
+OpenAI-compatible /v1/embeddings endpoint, configured in config.json.
+"""
+
+import argparse
+import json
+import math
+import os
+import re
+import sqlite3
+import struct
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+MEMORY_DIR = Path(os.environ.get("AGENTIX_MEMORY_DIR", str(Path.home() / ".config" / "agentix" / "memory")))
+DB_PATH = MEMORY_DIR / "memory.db"
+CONFIG_PATH = MEMORY_DIR / "config.json"
+
+DEFAULT_CONFIG = {
+    "embedding": {
+        # "ollama", "openai", or "none"
+        "provider": "ollama",
+        "url": "http://localhost:11434",
+        "model": "nomic-embed-text",
+        # env var holding the API key (openai provider only)
+        "api_key_env": "OPENAI_API_KEY",
+        "timeout": 30,
+    }
+}
+
+RRF_K = 60  # reciprocal-rank-fusion constant for hybrid search
+
+
+class EmbedError(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- config / db
+
+def load_config():
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+    if CONFIG_PATH.exists():
+        try:
+            user = json.loads(CONFIG_PATH.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"warning: cannot read {CONFIG_PATH}: {e}", file=sys.stderr)
+            return cfg
+        for section, values in user.items():
+            if isinstance(values, dict) and isinstance(cfg.get(section), dict):
+                cfg[section].update(values)
+            else:
+                cfg[section] = values
+    return cfg
+
+
+def save_config(cfg):
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+def connect():
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    db.execute("PRAGMA foreign_keys=ON")
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id         INTEGER PRIMARY KEY,
+            content    TEXT NOT NULL,
+            type       TEXT NOT NULL DEFAULT 'note',
+            tags       TEXT NOT NULL DEFAULT '',
+            project    TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+            content, tags, project,
+            content='memories', content_rowid='id'
+        );
+        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+            INSERT INTO memories_fts(rowid, content, tags, project)
+            VALUES (new.id, new.content, new.tags, new.project);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, content, tags, project)
+            VALUES ('delete', old.id, old.content, old.tags, old.project);
+        END;
+        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, content, tags, project)
+            VALUES ('delete', old.id, old.content, old.tags, old.project);
+            INSERT INTO memories_fts(rowid, content, tags, project)
+            VALUES (new.id, new.content, new.tags, new.project);
+        END;
+        CREATE TABLE IF NOT EXISTS embeddings (
+            memory_id INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+            model     TEXT NOT NULL,
+            vector    BLOB NOT NULL
+        );
+    """)
+    return db
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------- embeddings
+
+def embed_texts(cfg, texts):
+    """Return list of float vectors for texts. Raises EmbedError on failure."""
+    emb = cfg["embedding"]
+    provider = emb.get("provider", "none")
+    if provider == "none":
+        raise EmbedError("embedding provider is 'none' (see `memory config`)")
+
+    if provider == "ollama":
+        url = emb["url"].rstrip("/") + "/api/embed"
+        payload = {"model": emb["model"], "input": texts}
+        headers = {"Content-Type": "application/json"}
+        key = "embeddings"
+    elif provider == "openai":
+        url = emb["url"].rstrip("/") + "/v1/embeddings"
+        payload = {"model": emb["model"], "input": texts}
+        api_key = os.environ.get(emb.get("api_key_env", "OPENAI_API_KEY"), "")
+        if not api_key:
+            raise EmbedError(f"env var {emb.get('api_key_env')} not set")
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        key = "data"
+    else:
+        raise EmbedError(f"unknown embedding provider: {provider}")
+
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=emb.get("timeout", 30)) as resp:
+            body = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        raise EmbedError(f"embedding request to {url} failed: {e}") from e
+
+    if provider == "openai":
+        vectors = [item["embedding"] for item in sorted(body[key], key=lambda d: d["index"])]
+    else:
+        vectors = body.get(key) or []
+    if len(vectors) != len(texts):
+        raise EmbedError(f"expected {len(texts)} vectors, got {len(vectors)}")
+    return vectors
+
+
+def pack_vector(vec):
+    return struct.pack(f"{len(vec)}f", *vec)
+
+
+def unpack_vector(blob):
+    return struct.unpack(f"{len(blob) // 4}f", blob)
+
+
+def cosine(a, b):
+    if len(a) != len(b):
+        return -1.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    if na == 0 or nb == 0:
+        return -1.0
+    return dot / (na * nb)
+
+
+def store_embedding(db, cfg, memory_id, content):
+    """Embed content and upsert. Returns True on success, False (warn) on failure."""
+    try:
+        vec = embed_texts(cfg, [content])[0]
+    except EmbedError as e:
+        print(f"warning: stored without embedding ({e}); run `memory embed` to backfill",
+              file=sys.stderr)
+        db.execute("DELETE FROM embeddings WHERE memory_id=?", (memory_id,))
+        return False
+    db.execute(
+        "INSERT OR REPLACE INTO embeddings(memory_id, model, vector) VALUES (?,?,?)",
+        (memory_id, cfg["embedding"]["model"], pack_vector(vec)),
+    )
+    return True
+
+
+# ---------------------------------------------------------------- search
+
+def filter_sql(args):
+    clauses, params = [], []
+    if getattr(args, "type", None):
+        clauses.append("m.type = ?")
+        params.append(args.type)
+    if getattr(args, "project", None):
+        clauses.append("m.project = ?")
+        params.append(args.project)
+    if getattr(args, "tag", None):
+        clauses.append("(',' || m.tags || ',') LIKE ?")
+        params.append(f"%,{args.tag},%")
+    sql = (" AND " + " AND ".join(clauses)) if clauses else ""
+    return sql, params
+
+
+def fts_query(query):
+    """Sanitize free text into an FTS5 OR-query; bm25 ranks multi-term matches higher."""
+    tokens = re.findall(r"\w+", query, re.UNICODE)
+    return " OR ".join(f'"{t}"' for t in tokens)
+
+
+def fts_search(db, query, limit, args):
+    match = fts_query(query)
+    if not match:
+        return []
+    extra, params = filter_sql(args)
+    rows = db.execute(
+        f"""SELECT m.*, bm25(memories_fts) AS score
+            FROM memories_fts f JOIN memories m ON m.id = f.rowid
+            WHERE memories_fts MATCH ?{extra}
+            ORDER BY score LIMIT ?""",
+        [match, *params, limit],
+    ).fetchall()
+    return [(dict(r), -r["score"]) for r in rows]  # bm25: lower is better -> negate
+
+
+def vector_search(db, cfg, query, limit, args):
+    qvec = embed_texts(cfg, [query])[0]
+    extra, params = filter_sql(args)
+    rows = db.execute(
+        f"""SELECT m.*, e.vector AS _vec, e.model AS _model
+            FROM embeddings e JOIN memories m ON m.id = e.memory_id
+            WHERE e.model = ?{extra}""",
+        [cfg["embedding"]["model"], *params],
+    ).fetchall()
+    scored = []
+    for r in rows:
+        d = dict(r)
+        vec = unpack_vector(d.pop("_vec"))
+        d.pop("_model", None)
+        scored.append((d, cosine(qvec, vec)))
+    scored.sort(key=lambda t: t[1], reverse=True)
+    return scored[:limit]
+
+
+def hybrid_search(db, cfg, query, limit, args):
+    """Reciprocal rank fusion of FTS and vector results. Falls back to FTS alone."""
+    pool = max(limit * 3, 10)
+    fts = fts_search(db, query, pool, args)
+    try:
+        vec = vector_search(db, cfg, query, pool, args)
+    except EmbedError as e:
+        print(f"warning: vector search unavailable ({e}); using full-text only", file=sys.stderr)
+        return fts[:limit]
+    fused = {}
+    for ranking in (fts, vec):
+        for rank, (row, _score) in enumerate(ranking):
+            entry = fused.setdefault(row["id"], {"row": row, "score": 0.0})
+            entry["score"] += 1.0 / (RRF_K + rank + 1)
+    ordered = sorted(fused.values(), key=lambda e: e["score"], reverse=True)
+    return [(e["row"], e["score"]) for e in ordered[:limit]]
+
+
+# ---------------------------------------------------------------- output
+
+def print_results(results, fmt):
+    if fmt == "json":
+        out = []
+        for row, score in results:
+            row = {k: v for k, v in row.items() if not k.startswith("_") and k != "score"}
+            row["match_score"] = round(score, 4)
+            out.append(row)
+        print(json.dumps(out, indent=2))
+        return
+    if not results:
+        if fmt == "text":
+            print("no matches")
+        return
+    for row, score in results:
+        meta = [f"#{row['id']}", row["type"]]
+        if row["tags"]:
+            meta.append(row["tags"])
+        if row["project"]:
+            meta.append(f"project:{row['project']}")
+        if fmt == "context":
+            print(f"[{' | '.join(meta)}] {row['content']}")
+        else:
+            print(f"[{' | '.join(meta)}] (score {score:.3f}, {row['updated_at']})")
+            print(f"  {row['content']}")
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_add(args):
+    db = connect()
+    cfg = load_config()
+    ts = now()
+    tags = ",".join(t.strip() for t in (args.tags or "").split(",") if t.strip())
+    cur = db.execute(
+        "INSERT INTO memories(content, type, tags, project, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (args.content, args.type, tags, args.project or "", ts, ts),
+    )
+    memory_id = cur.lastrowid
+    embedded = store_embedding(db, cfg, memory_id, args.content)
+    db.commit()
+    print(f"saved #{memory_id}" + ("" if embedded else " (no embedding)"))
+
+
+def cmd_search(args):
+    db = connect()
+    cfg = load_config()
+    if args.mode == "fts":
+        results = fts_search(db, args.query, args.limit, args)
+    elif args.mode == "vector":
+        try:
+            results = vector_search(db, cfg, args.query, args.limit, args)
+        except EmbedError as e:
+            sys.exit(f"error: {e}\nhint: start ollama (`systemctl start ollama`) and "
+                     f"`ollama pull {cfg['embedding']['model']}`, or edit {CONFIG_PATH}")
+    else:
+        results = hybrid_search(db, cfg, args.query, args.limit, args)
+    print_results(results, args.format)
+
+
+def cmd_list(args):
+    db = connect()
+    extra, params = filter_sql(args)
+    rows = db.execute(
+        f"SELECT m.* FROM memories m WHERE 1=1{extra} ORDER BY m.updated_at DESC LIMIT ?",
+        [*params, args.limit],
+    ).fetchall()
+    print_results([(dict(r), 0.0) for r in rows], args.format)
+
+
+def get_row(db, memory_id):
+    row = db.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+    if not row:
+        sys.exit(f"error: no memory #{memory_id}")
+    return dict(row)
+
+
+def cmd_get(args):
+    db = connect()
+    row = get_row(db, args.id)
+    row["embedded"] = bool(
+        db.execute("SELECT 1 FROM embeddings WHERE memory_id=?", (args.id,)).fetchone()
+    )
+    print(json.dumps(row, indent=2))
+
+
+def cmd_edit(args):
+    db = connect()
+    cfg = load_config()
+    row = get_row(db, args.id)
+    updates, params = [], []
+    for field in ("content", "type", "project"):
+        value = getattr(args, field)
+        if value is not None:
+            updates.append(f"{field}=?")
+            params.append(value)
+    if args.tags is not None:
+        tags = ",".join(t.strip() for t in args.tags.split(",") if t.strip())
+        updates.append("tags=?")
+        params.append(tags)
+    if not updates:
+        sys.exit("error: nothing to update (use --content/--type/--tags/--project)")
+    updates.append("updated_at=?")
+    params.extend([now(), args.id])
+    db.execute(f"UPDATE memories SET {', '.join(updates)} WHERE id=?", params)
+    if args.content is not None and args.content != row["content"]:
+        store_embedding(db, cfg, args.id, args.content)
+    db.commit()
+    print(f"updated #{args.id}")
+
+
+def cmd_delete(args):
+    db = connect()
+    get_row(db, args.id)
+    db.execute("DELETE FROM memories WHERE id=?", (args.id,))
+    db.commit()
+    print(f"deleted #{args.id}")
+
+
+def cmd_embed(args):
+    db = connect()
+    cfg = load_config()
+    model = cfg["embedding"]["model"]
+    rows = db.execute(
+        """SELECT m.id, m.content FROM memories m
+           LEFT JOIN embeddings e ON e.memory_id = m.id AND e.model = ?
+           WHERE e.memory_id IS NULL""",
+        (model,),
+    ).fetchall()
+    if not rows:
+        print("all memories embedded")
+        return
+    done = 0
+    for start in range(0, len(rows), 32):
+        batch = rows[start:start + 32]
+        try:
+            vectors = embed_texts(cfg, [r["content"] for r in batch])
+        except EmbedError as e:
+            sys.exit(f"error after {done} embeddings: {e}")
+        db.executemany(
+            "INSERT OR REPLACE INTO embeddings(memory_id, model, vector) VALUES (?,?,?)",
+            [(r["id"], model, pack_vector(v)) for r, v in zip(batch, vectors)],
+        )
+        db.commit()
+        done += len(batch)
+    print(f"embedded {done} memories with {model}")
+
+
+def cmd_stats(args):
+    db = connect()
+    cfg = load_config()
+    total = db.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
+    embedded = db.execute(
+        "SELECT COUNT(*) c FROM embeddings WHERE model=?", (cfg["embedding"]["model"],)
+    ).fetchone()["c"]
+    by_type = db.execute(
+        "SELECT type, COUNT(*) c FROM memories GROUP BY type ORDER BY c DESC"
+    ).fetchall()
+    print(f"db: {DB_PATH} ({DB_PATH.stat().st_size if DB_PATH.exists() else 0} bytes)")
+    print(f"memories: {total} ({embedded} embedded with {cfg['embedding']['model']})")
+    print(f"embedding provider: {cfg['embedding']['provider']} @ {cfg['embedding']['url']}")
+    for r in by_type:
+        print(f"  {r['type']}: {r['c']}")
+
+
+def cmd_config(args):
+    cfg = load_config()
+    if args.set:
+        for pair in args.set:
+            if "=" not in pair:
+                sys.exit(f"error: expected key=value, got {pair!r}")
+            key, value = pair.split("=", 1)
+            node = cfg
+            parts = key.split(".")
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = int(value) if value.isdigit() else value
+        save_config(cfg)
+    print(json.dumps(cfg, indent=2))
+
+
+# ---------------------------------------------------------------- main
+
+def add_filters(p):
+    p.add_argument("--type", help="filter by type")
+    p.add_argument("--project", help="filter by project")
+    p.add_argument("--tag", help="filter by single tag")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="memory", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("add", help="save a memory")
+    p.add_argument("content")
+    p.add_argument("--type", default="note",
+                   help="note|fact|preference|project|reference (default: note)")
+    p.add_argument("--tags", help="comma-separated tags")
+    p.add_argument("--project", help="project name")
+    p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("search", help="search memories")
+    p.add_argument("query")
+    p.add_argument("--mode", choices=["fts", "vector", "hybrid"], default="hybrid")
+    p.add_argument("-n", "--limit", type=int, default=5)
+    p.add_argument("--format", choices=["text", "json", "context"], default="text")
+    add_filters(p)
+    p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("list", help="list recent memories")
+    p.add_argument("-n", "--limit", type=int, default=20)
+    p.add_argument("--format", choices=["text", "json", "context"], default="text")
+    add_filters(p)
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("get", help="show one memory as JSON")
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_get)
+
+    p = sub.add_parser("edit", help="update a memory")
+    p.add_argument("id", type=int)
+    p.add_argument("--content")
+    p.add_argument("--type")
+    p.add_argument("--tags")
+    p.add_argument("--project")
+    p.set_defaults(func=cmd_edit)
+
+    p = sub.add_parser("delete", help="delete a memory")
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_delete)
+
+    p = sub.add_parser("embed", help="backfill missing embeddings")
+    p.set_defaults(func=cmd_embed)
+
+    p = sub.add_parser("stats", help="show database stats")
+    p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("config", help="show or set config")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE",
+                   help="e.g. --set embedding.provider=openai")
+    p.set_defaults(func=cmd_config)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
