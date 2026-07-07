@@ -12,9 +12,9 @@
 Add this repo as a plugin marketplace, then install the plugins you want:
 
 ```text
-/plugin marketplace add /home/wouter/Work/agentix
-/plugin install memory@agentix
-/plugin install scribe@agentix
+/plugin marketplace add /home/wouter/Work/agentship
+/plugin install memory@agentship
+/plugin install scribe@agentship
 /reload-plugins
 ```
 
@@ -33,8 +33,8 @@ Other providers: see [embeddings](memory.md#embeddings).
 ### CLI on PATH (optional)
 
 ```bash
-ln -s /home/wouter/Work/agentix/memory/bin/memory ~/.local/bin/memory
-ln -s /home/wouter/Work/agentix/scribe/bin/check_links ~/.local/bin/check_links
+ln -s /home/wouter/Work/agentship/memory/bin/memory ~/.local/bin/memory
+ln -s /home/wouter/Work/agentship/scribe/bin/check_links ~/.local/bin/check_links
 ```
 
 ## Developing
@@ -43,8 +43,8 @@ Claude Code installs plugins by copying them into its cache, so changes in
 this repo do not apply automatically:
 
 ```text
-/plugin marketplace update /home/wouter/Work/agentix
-/plugin install <plugin>@agentix     # first install of a new plugin
+/plugin marketplace update /home/wouter/Work/agentship
+/plugin install <plugin>@agentship     # first install of a new plugin
 /reload-plugins                      # apply changes to the running session
 ```
 
@@ -56,7 +56,7 @@ the repo root, or the marketplace will not offer them.
 Both CLIs are plain Python scripts, testable from the shell:
 
 ```bash
-AGENTIX_MEMORY_DIR=/tmp/mem-test memory/bin/memory add "test" --type note
+AGENTSHIP_MEMORY_DIR=/tmp/mem-test memory/bin/memory add "test" --type note
 scribe/bin/check_links docs
 ```
 

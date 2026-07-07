@@ -1,18 +1,18 @@
 ---
 name: recall
-description: Search the agentix memory store. Use when the user asks "do you remember...", "what did I tell you about...", "check your memory", or when starting work that likely has stored context (preferences, project constraints, past decisions) not found in the repo. Keyword-relevant memories are auto-injected per prompt by a hook; use this skill for deliberate or semantic (meaning-based) lookups.
+description: Search the agentship memory store. Use when the user asks "do you remember...", "what did I tell you about...", "check your memory", or when starting work that likely has stored context (preferences, project constraints, past decisions) not found in the repo. Keyword-relevant memories are auto-injected per prompt by a hook; use this skill for deliberate or semantic (meaning-based) lookups.
 ---
 
 # Recall
 
-Search memories with the agentix memory CLI:
+Search memories with the agentship memory CLI:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/memory" search "QUERY" --mode hybrid -n 8
 ```
 
 If `${CLAUDE_PLUGIN_ROOT}` is not resolved in your context, the absolute CLI path
-was printed by the SessionStart hook ("agentix memory tool active. CLI: ...").
+was printed by the SessionStart hook ("agentship memory tool active. CLI: ...").
 
 ## Modes
 
@@ -27,7 +27,7 @@ was printed by the SessionStart hook ("agentix memory tool active. CLI: ...").
 ## Filters and formats
 
 ```bash
-memory search "deploy" --type project --project agentix --tag infra
+memory search "deploy" --type project --project agentship --tag infra
 memory search "editor" --format json          # machine-readable
 memory list -n 20 --type preference           # browse without a query
 memory get 42                                 # full record

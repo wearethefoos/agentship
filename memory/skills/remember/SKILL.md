@@ -1,18 +1,18 @@
 ---
 name: remember
-description: Save a durable memory to the agentix memory store. Use when the user says "remember this", "save this for later", "note that I prefer...", or when the user states a lasting fact, preference, or project constraint worth keeping across sessions. Do NOT use for facts already in the repo (code, git history, CLAUDE.md) or things only relevant to the current conversation.
+description: Save a durable memory to the agentship memory store. Use when the user says "remember this", "save this for later", "note that I prefer...", or when the user states a lasting fact, preference, or project constraint worth keeping across sessions. Do NOT use for facts already in the repo (code, git history, CLAUDE.md) or things only relevant to the current conversation.
 ---
 
 # Remember
 
-Save a memory with the agentix memory CLI:
+Save a memory with the agentship memory CLI:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/bin/memory" add "CONTENT" --type TYPE --tags tag1,tag2 --project PROJECT
 ```
 
 If `${CLAUDE_PLUGIN_ROOT}` is not resolved in your context, the absolute CLI path
-was printed by the SessionStart hook ("agentix memory tool active. CLI: ...").
+was printed by the SessionStart hook ("agentship memory tool active. CLI: ...").
 
 ## Steps
 

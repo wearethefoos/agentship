@@ -1,6 +1,6 @@
-# Agentix documentation
+# Agentship documentation
 
-Agentix is a collection of agent tools for Claude Code, packaged as plugins
+Agentship is a collection of agent tools for Claude Code, packaged as plugins
 and distributed from this repo, which doubles as a plugin marketplace.
 
 ## Start here

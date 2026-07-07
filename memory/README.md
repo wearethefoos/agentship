@@ -6,7 +6,7 @@ Pure Python stdlib — no dependencies.
 
 ## Storage
 
-`~/.config/agentix/memory/` (override with `AGENTIX_MEMORY_DIR`):
+`~/.config/agentship/memory/` (override with `AGENTSHIP_MEMORY_DIR`):
 
 - `memory.db` — SQLite: `memories` table, `memories_fts` FTS5 index (kept in
   sync by triggers), `embeddings` table (float32 blobs, tagged by model).
@@ -58,8 +58,8 @@ back to full-text.
 Install as a plugin (this repo is a marketplace):
 
 ```
-/plugin marketplace add /home/wouter/Work/agentix
-/plugin install memory@agentix
+/plugin marketplace add /home/wouter/Work/agentship
+/plugin install memory@agentship
 ```
 
 You get:
@@ -75,5 +75,5 @@ You get:
 Optionally symlink the CLI onto your PATH:
 
 ```bash
-ln -s /home/wouter/Work/agentix/memory/bin/memory ~/.local/bin/memory
+ln -s /home/wouter/Work/agentship/memory/bin/memory ~/.local/bin/memory
 ```

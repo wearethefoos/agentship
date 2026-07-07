@@ -24,7 +24,7 @@ def main():
     if not stats:
         return
     recent = run("list", "-n", "3", "--format", "context")
-    print(f"agentix memory tool active. CLI: {CLI}")
+    print(f"agentship memory tool active. CLI: {CLI}")
     print("Save durable facts/preferences with: memory add \"...\" --type preference --tags a,b")
     print("Recall with: memory search \"...\" (hybrid FTS+vector). Relevant memories are also "
           "auto-injected on each prompt via keyword match.")

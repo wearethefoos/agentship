@@ -1,6 +1,6 @@
 # Architecture
 
-Agentix is a collection of agent tools packaged as Claude Code plugins. The
+Agentship is a collection of agent tools packaged as Claude Code plugins. The
 repo root doubles as a Claude Code plugin marketplace: one `marketplace.json`
 manifest lists the plugins, and each plugin is a self-contained folder.
 
@@ -8,7 +8,7 @@ manifest lists the plugins, and each plugin is a self-contained folder.
 
 ```mermaid
 flowchart TD
-    repo[agentix repo root] --> mp[".claude-plugin/marketplace.json"]
+    repo[agentship repo root] --> mp[".claude-plugin/marketplace.json"]
     repo --> docs["docs/ (this documentation)"]
     repo --> mem[memory/]
     repo --> scr[scribe/]
@@ -54,7 +54,7 @@ Every plugin follows the same shape:
 - **Hooks announce, skills instruct.** Absolute paths differ per install, so
   SessionStart hooks print the resolved CLI paths into context, and skills
   reference `${CLAUDE_PLUGIN_ROOT}` with that announcement as fallback.
-- **State under `~/.config/agentix/<plugin>/`.** Never inside the repo or the
+- **State under `~/.config/agentship/<plugin>/`.** Never inside the repo or the
   plugin cache, both of which are disposable.
 
 ## Plugins

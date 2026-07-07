@@ -156,7 +156,7 @@ def check_external(url, cache):
 
 def fetch_status(url):
     for method in ("HEAD", "GET"):
-        req = urllib.request.Request(url, method=method, headers={"User-Agent": "agentix-scribe-linkcheck/0.1"})
+        req = urllib.request.Request(url, method=method, headers={"User-Agent": "agentship-scribe-linkcheck/0.1"})
         try:
             with urllib.request.urlopen(req, timeout=8):
                 return None

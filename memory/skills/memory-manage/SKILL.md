@@ -1,12 +1,12 @@
 ---
 name: memory-manage
-description: Maintain the agentix memory store - list, edit, delete memories, view stats, backfill embeddings, or change the embedding provider. Use when the user says "forget that", "update that memory", "clean up your memories", "memory stats", or asks to configure memory embeddings.
+description: Maintain the agentship memory store - list, edit, delete memories, view stats, backfill embeddings, or change the embedding provider. Use when the user says "forget that", "update that memory", "clean up your memories", "memory stats", or asks to configure memory embeddings.
 ---
 
 # Memory management
 
 CLI: `"${CLAUDE_PLUGIN_ROOT}/bin/memory"` (absolute path also printed by the
-SessionStart hook). Storage lives in `~/.config/agentix/memory/`.
+SessionStart hook). Storage lives in `~/.config/agentship/memory/`.
 
 ## Commands
 

@@ -36,7 +36,7 @@ def main():
     if result.returncode != 0 or not hits:
         return
 
-    print("Recalled memories (agentix memory, keyword match — ignore any that are "
+    print("Recalled memories (agentship memory, keyword match — ignore any that are "
           "irrelevant to the request):")
     print(hits)
 

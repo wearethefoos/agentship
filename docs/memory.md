@@ -7,8 +7,8 @@ dependencies to install.
 
 ## Storage
 
-Everything lives in `~/.config/agentix/memory/` (override with the
-`AGENTIX_MEMORY_DIR` environment variable):
+Everything lives in `~/.config/agentship/memory/` (override with the
+`AGENTSHIP_MEMORY_DIR` environment variable):
 
 - `memory.db` — SQLite database, WAL mode
 - `config.json` — embedding provider configuration

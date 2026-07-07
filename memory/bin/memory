@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""agentix memory — SQLite-backed long-term memory with full-text and vector search.
+"""agentship memory — SQLite-backed long-term memory with full-text and vector search.
 
-Storage: ~/.config/agentix/memory/memory.db (override with AGENTIX_MEMORY_DIR).
+Storage: ~/.config/agentship/memory/memory.db (override with AGENTSHIP_MEMORY_DIR).
 No third-party dependencies; embeddings come from Ollama or any
 OpenAI-compatible /v1/embeddings endpoint, configured in config.json.
 """
@@ -19,7 +19,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-MEMORY_DIR = Path(os.environ.get("AGENTIX_MEMORY_DIR", str(Path.home() / ".config" / "agentix" / "memory")))
+MEMORY_DIR = Path(os.environ.get("AGENTSHIP_MEMORY_DIR", str(Path.home() / ".config" / "agentship" / "memory")))
 DB_PATH = MEMORY_DIR / "memory.db"
 CONFIG_PATH = MEMORY_DIR / "config.json"
 
