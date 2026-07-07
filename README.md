@@ -19,3 +19,7 @@ Install:
   auto-recall hooks, remember/recall skills.
 - [scribe](scribe/) — docs discipline: clean markdown under `./docs`, mermaid
   for flows/hierarchy, auto link-check after every docs edit.
+
+## License
+
+[MIT](LICENSE)
