@@ -10,7 +10,7 @@ Full documentation in [docs/](docs/README.md).
 Install:
 
 ```
-/plugin marketplace add /home/wouter/Work/agentship
+/plugin marketplace add wearethefoos/agentship
 ```
 
 ## Tools

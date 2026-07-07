@@ -12,11 +12,13 @@
 Add this repo as a plugin marketplace, then install the plugins you want:
 
 ```text
-/plugin marketplace add /home/wouter/Work/agentship
+/plugin marketplace add wearethefoos/agentship
 /plugin install memory@agentship
 /plugin install scribe@agentship
 /reload-plugins
 ```
+
+Working from a local clone instead: `/plugin marketplace add /path/to/agentship`.
 
 ### Memory: enable vector search (optional)
 
@@ -32,9 +34,11 @@ Other providers: see [embeddings](memory.md#embeddings).
 
 ### CLI on PATH (optional)
 
+From a clone of this repo:
+
 ```bash
-ln -s /home/wouter/Work/agentship/memory/bin/memory ~/.local/bin/memory
-ln -s /home/wouter/Work/agentship/scribe/bin/check_links ~/.local/bin/check_links
+ln -s "$(pwd)/memory/bin/memory" ~/.local/bin/memory
+ln -s "$(pwd)/scribe/bin/check_links" ~/.local/bin/check_links
 ```
 
 ## Developing
@@ -43,10 +47,14 @@ Claude Code installs plugins by copying them into its cache, so changes in
 this repo do not apply automatically:
 
 ```text
-/plugin marketplace update /home/wouter/Work/agentship
+/plugin marketplace update agentship
 /plugin install <plugin>@agentship     # first install of a new plugin
-/reload-plugins                      # apply changes to the running session
+/reload-plugins                        # apply changes to the running session
 ```
+
+For plugin development, add the marketplace from a local clone
+(`/plugin marketplace add /path/to/agentship`) so updates come from your
+working tree instead of GitHub.
 
 New plugins must also be registered in `.claude-plugin/marketplace.json` at
 the repo root, or the marketplace will not offer them.

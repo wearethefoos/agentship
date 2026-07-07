@@ -58,7 +58,7 @@ back to full-text.
 Install as a plugin (this repo is a marketplace):
 
 ```
-/plugin marketplace add /home/wouter/Work/agentship
+/plugin marketplace add wearethefoos/agentship
 /plugin install memory@agentship
 ```
 
@@ -75,5 +75,5 @@ You get:
 Optionally symlink the CLI onto your PATH:
 
 ```bash
-ln -s /home/wouter/Work/agentship/memory/bin/memory ~/.local/bin/memory
+ln -s "$(pwd)/memory/bin/memory" ~/.local/bin/memory   # from a repo clone
 ```

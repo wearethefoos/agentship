@@ -36,6 +36,6 @@ Project documentation discipline for Claude Code. Pure Python stdlib.
 ## Install
 
 ```
-/plugin marketplace add /home/wouter/Work/agentship
+/plugin marketplace add wearethefoos/agentship
 /plugin install scribe@agentship
 ```
