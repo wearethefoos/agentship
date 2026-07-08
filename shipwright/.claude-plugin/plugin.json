@@ -1,0 +1,22 @@
+{
+  "name": "shipwright",
+  "description": "Rebuild any app in Rust with a checkpointed, cost-tiered agent pipeline: survey, test reinforcement, e2e parity suite, rewrite blueprint, port, sea trial.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Wouter de Vos"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking for active rewrite..."
+          }
+        ]
+      }
+    ]
+  }
+}

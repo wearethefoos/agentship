@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""shipwright — state tracking for agent-driven Rust rewrites.
+
+Keeps a single JSON state file per rewrite (in the ORIGINAL app's repo under
+.shipwright/) holding the pipeline phase checkpoints, the feature parity
+matrix, and the findings ledger. Skills and subagents call this CLI so that
+progress survives sessions and parallel agents don't lose each other's work.
+
+Stdlib only. State updates take an exclusive lock so fanned-out subagents can
+record features/findings concurrently without clobbering each other.
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+PHASES = ["survey", "reinforce", "parity", "blueprint", "rebuild", "sea-trial"]
+PHASE_STATUSES = ("pending", "in_progress", "complete")
+FEATURE_KINDS = ("endpoint", "command", "page", "job", "behavior", "other")
+FEATURE_FLAGS = ("e2e_old", "tests_ported", "implemented", "documented", "e2e_new")
+FINDING_KINDS = ("bug", "smell", "risk", "perf")
+SEVERITIES = ("low", "medium", "high")
+DECISIONS = ("pending", "preserve", "fix")
+
+# Licenses considered fine for a permissively-licensed rewrite. Anything else
+# is flagged so a human decides.
+PERMISSIVE = {"MIT", "APACHE-2.0", "BSD-2-CLAUSE", "BSD-3-CLAUSE", "ISC",
+              "ZLIB", "UNLICENSE", "0BSD", "CC0-1.0", "MIT-0", "UNICODE-3.0",
+              "UNICODE-DFS-2016", "BSL-1.0"}
+
+
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def state_dir(create=False):
+    """Locate .shipwright/ in $SHIPWRIGHT_DIR, cwd, or any parent of cwd."""
+    env = os.environ.get("SHIPWRIGHT_DIR")
+    if env:
+        d = Path(env)
+    else:
+        d = None
+        for parent in [Path.cwd(), *Path.cwd().parents]:
+            if (parent / ".shipwright" / "state.json").is_file():
+                d = parent / ".shipwright"
+                break
+        if d is None:
+            d = Path.cwd() / ".shipwright"
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def die(msg, code=1):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+class State:
+    """Load-mutate-save wrapper holding an exclusive lock while open."""
+
+    def __init__(self, create=False):
+        self.path = state_dir(create) / "state.json"
+        self._lock = None
+
+    def __enter__(self):
+        lock_path = self.path.parent / ".lock"
+        if not lock_path.parent.is_dir():
+            die("no rewrite here — run `shipwright init` in the original app's repo first")
+        self._lock = open(lock_path, "w")
+        fcntl.flock(self._lock, fcntl.LOCK_EX)
+        self.data = json.loads(self.path.read_text()) if self.path.is_file() else None
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None and self.data is not None:
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.data, indent=2) + "\n")
+            tmp.replace(self.path)
+        fcntl.flock(self._lock, fcntl.LOCK_UN)
+        self._lock.close()
+
+
+def load_or_die():
+    path = state_dir() / "state.json"
+    if not path.is_file():
+        die("no rewrite here — run `shipwright init` in the original app's repo first")
+    return json.loads(path.read_text())
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_init(args):
+    d = state_dir(create=True)
+    path = d / "state.json"
+    if path.is_file() and not args.force:
+        die(f"{path} already exists (use --force to reinitialize)")
+    data = {
+        "app": args.name,
+        "kind": args.kind,
+        "source": str(Path.cwd()),
+        "target": str((Path.cwd() / args.target).resolve()),
+        "created": now(),
+        "phases": {p: {"status": "pending", "completed_at": None} for p in PHASES},
+        "features": [],
+        "findings": [],
+    }
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    gi = d / ".gitignore"
+    if not gi.is_file():
+        gi.write_text(".lock\n*.tmp\n")
+    print(f"initialized rewrite '{args.name}' ({args.kind})")
+    print(f"  state:  {path}")
+    print(f"  target: {data['target']}")
+    print("next: /shipwright:survey")
+
+
+def phase_progress(data):
+    done = sum(1 for p in PHASES if data["phases"][p]["status"] == "complete")
+    active = next((p for p in PHASES if data["phases"][p]["status"] == "in_progress"), None)
+    nxt = next((p for p in PHASES if data["phases"][p]["status"] == "pending"), None)
+    return done, active, nxt
+
+
+def matrix_counts(data):
+    feats = data["features"]
+    return {f: sum(1 for x in feats if x["status"][f]) for f in FEATURE_FLAGS}
+
+
+def cmd_status(args):
+    data = load_or_die()
+    done, active, nxt = phase_progress(data)
+    feats, finds = data["features"], data["findings"]
+    undecided = [f for f in finds if f["decision"] == "pending"]
+    if args.format == "json":
+        print(json.dumps(data, indent=2))
+        return
+    if args.format == "context":
+        line = f"shipwright rewrite active: '{data['app']}' ({data['kind']}) -> {data['target']}. "
+        line += f"Phases {done}/{len(PHASES)} complete"
+        if active:
+            line += f", '{active}' in progress"
+        elif nxt:
+            line += f", next: /shipwright:{nxt}"
+        counts = matrix_counts(data)
+        line += (f". Features: {len(feats)} tracked"
+                 + (f" ({counts['implemented']} implemented, {counts['e2e_new']} e2e-verified)"
+                    if feats else "")
+                 + f". Findings: {len(finds)}"
+                 + (f" ({len(undecided)} awaiting preserve/fix decision)" if undecided else "") + ".")
+        print(line)
+        return
+    print(f"{data['app']} ({data['kind']})  ->  {data['target']}")
+    for p in PHASES:
+        st = data["phases"][p]["status"]
+        mark = {"complete": "x", "in_progress": ">", "pending": " "}[st]
+        print(f"  [{mark}] {p}")
+    if feats:
+        counts = matrix_counts(data)
+        print(f"features: {len(feats)} tracked | " +
+              " | ".join(f"{f.replace('_', '-')}: {counts[f]}/{len(feats)}" for f in FEATURE_FLAGS))
+    if finds:
+        print(f"findings: {len(finds)} ({len(undecided)} undecided, "
+              f"{sum(1 for f in finds if f['decision'] == 'fix')} to fix, "
+              f"{sum(1 for f in finds if f['decision'] == 'preserve')} preserved)")
+    if active:
+        print(f"in progress: {active}")
+    elif nxt:
+        print(f"next: /shipwright:{nxt}")
+    elif done == len(PHASES):
+        print("all phases complete — ship it")
+
+
+def gate_errors(data, phase):
+    """Phase-specific completion criteria. Returns list of blockers."""
+    feats, finds = data["features"], data["findings"]
+    errs = []
+    if phase == "survey" and not feats:
+        errs.append("no features recorded — the parity matrix is the survey's main deliverable")
+    if phase == "parity":
+        missing = [f["name"] for f in feats if not f["status"]["e2e_old"]]
+        if missing:
+            errs.append(f"{len(missing)} feature(s) lack a passing e2e test against the "
+                        f"ORIGINAL app: {', '.join(missing[:5])}"
+                        + ("..." if len(missing) > 5 else ""))
+    if phase == "blueprint":
+        undecided = [f for f in finds if f["decision"] == "pending"]
+        if undecided:
+            errs.append(f"{len(undecided)} finding(s) still awaiting an explicit "
+                        "preserve/fix decision (shipwright finding decide ID ...)")
+    if phase == "rebuild":
+        for flag, label in (("tests_ported", "ported tests"), ("implemented", "an implementation"),
+                            ("documented", "documentation")):
+            missing = [f["name"] for f in feats if not f["status"][flag]]
+            if missing:
+                errs.append(f"{len(missing)} feature(s) lack {label}: "
+                            + ", ".join(missing[:5]) + ("..." if len(missing) > 5 else ""))
+    if phase == "sea-trial":
+        missing = [f["name"] for f in feats if not f["status"]["e2e_new"]]
+        if missing:
+            errs.append(f"{len(missing)} feature(s) not e2e-verified against the NEW app: "
+                        + ", ".join(missing[:5]) + ("..." if len(missing) > 5 else ""))
+    return errs
+
+
+def cmd_phase(args):
+    if args.action == "list":
+        data = load_or_die()
+        for p in PHASES:
+            print(f"{p}\t{data['phases'][p]['status']}")
+        return
+    phase = args.phase
+    if phase not in PHASES:
+        die(f"unknown phase '{phase}' (phases: {', '.join(PHASES)})")
+    with State() as st:
+        data = st.data
+        if args.action == "start":
+            idx = PHASES.index(phase)
+            blockers = [p for p in PHASES[:idx] if data["phases"][p]["status"] != "complete"]
+            if blockers and not args.force:
+                die(f"earlier phase(s) not complete: {', '.join(blockers)} (use --force to override)")
+            data["phases"][phase]["status"] = "in_progress"
+            print(f"phase '{phase}' started")
+        elif args.action == "complete":
+            errs = gate_errors(data, phase)
+            if errs and not args.force:
+                print(f"cannot complete '{phase}':", file=sys.stderr)
+                for e in errs:
+                    print(f"  - {e}", file=sys.stderr)
+                sys.exit(1)
+            data["phases"][phase]["status"] = "complete"
+            data["phases"][phase]["completed_at"] = now()
+            print(f"phase '{phase}' complete")
+            _, _, nxt = phase_progress(data)
+            if nxt:
+                print(f"next: /shipwright:{nxt}")
+        elif args.action == "reopen":
+            data["phases"][phase]["status"] = "in_progress"
+            data["phases"][phase]["completed_at"] = None
+            print(f"phase '{phase}' reopened")
+
+
+def cmd_feature(args):
+    if args.action == "add":
+        with State() as st:
+            feats = st.data["features"]
+            if any(f["name"].lower() == args.name.lower() for f in feats):
+                die(f"feature '{args.name}' already tracked")
+            fid = max((f["id"] for f in feats), default=0) + 1
+            feats.append({
+                "id": fid, "name": args.name, "kind": args.kind,
+                "notes": args.notes or "",
+                "status": {f: False for f in FEATURE_FLAGS},
+            })
+        print(f"feature #{fid} added: {args.name}")
+    elif args.action == "set":
+        flag = args.flag.replace("-", "_")
+        if flag not in FEATURE_FLAGS:
+            die(f"unknown flag '{args.flag}' (flags: "
+                + ", ".join(f.replace("_", "-") for f in FEATURE_FLAGS) + ")")
+        with State() as st:
+            feat = next((f for f in st.data["features"] if f["id"] == args.id), None)
+            if not feat:
+                die(f"no feature #{args.id}")
+            feat["status"][flag] = args.value == "on"
+            if args.notes:
+                feat["notes"] = args.notes
+        print(f"feature #{args.id} {args.flag}={args.value}")
+    elif args.action == "list":
+        data = load_or_die()
+        feats = data["features"]
+        if args.pending:
+            flag = args.pending.replace("-", "_")
+            if flag not in FEATURE_FLAGS:
+                die(f"unknown flag '{args.pending}'")
+            feats = [f for f in feats if not f["status"][flag]]
+        if args.format == "json":
+            print(json.dumps(feats, indent=2))
+            return
+        for f in feats:
+            flags = " ".join(
+                ("[x]" if f["status"][fl] else "[ ]") + fl.replace("_", "-")
+                for fl in FEATURE_FLAGS)
+            print(f"#{f['id']}\t{f['kind']}\t{f['name']}\t{flags}"
+                  + (f"\t{f['notes']}" if f["notes"] else ""))
+
+
+def cmd_finding(args):
+    if args.action == "add":
+        with State() as st:
+            finds = st.data["findings"]
+            fid = max((f["id"] for f in finds), default=0) + 1
+            finds.append({
+                "id": fid, "kind": args.kind, "severity": args.severity,
+                "where": args.where or "", "description": args.description,
+                "decision": args.decision, "decision_note": "",
+                "created": now(),
+            })
+        print(f"finding #{fid} recorded ({args.kind}/{args.severity}, decision: {args.decision})")
+    elif args.action == "decide":
+        with State() as st:
+            f = next((x for x in st.data["findings"] if x["id"] == args.id), None)
+            if not f:
+                die(f"no finding #{args.id}")
+            f["decision"] = args.decision
+            f["decision_note"] = args.note or f["decision_note"]
+        print(f"finding #{args.id} -> {args.decision}")
+    elif args.action == "list":
+        data = load_or_die()
+        finds = data["findings"]
+        if args.decision:
+            finds = [f for f in finds if f["decision"] == args.decision]
+        if args.format == "json":
+            print(json.dumps(finds, indent=2))
+            return
+        for f in finds:
+            loc = f" @ {f['where']}" if f["where"] else ""
+            note = f" — {f['decision_note']}" if f["decision_note"] else ""
+            print(f"#{f['id']}\t{f['kind']}/{f['severity']}\t[{f['decision']}]"
+                  f"\t{f['description']}{loc}{note}")
+
+
+def cmd_crate(args):
+    ok = True
+    for name in args.names:
+        url = f"https://crates.io/api/v1/crates/{name}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "agentship-shipwright (https://github.com/wearethefoos/agentship)"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                info = json.load(resp)
+        except urllib.error.HTTPError as e:
+            print(f"{name}\tERROR\tcrates.io returned {e.code}")
+            ok = False
+            continue
+        except (urllib.error.URLError, TimeoutError, OSError):
+            print(f"{name}\tERROR\toffline or crates.io unreachable — check the "
+                  "license manually on https://crates.io before depending on it")
+            ok = False
+            continue
+        crate = info["crate"]
+        version = crate.get("max_stable_version") or crate.get("max_version", "?")
+        license_ = next((v.get("license") for v in info.get("versions", [])
+                         if v.get("num") == version), None) or "?"
+        parts = [p.strip() for chunk in license_.replace(" OR ", "/").split("/")
+                 for p in chunk.split(" AND ")]
+        permissive = any(p.upper() in PERMISSIVE for p in parts) and license_ != "?"
+        verdict = "ok" if permissive else "REVIEW-LICENSE"
+        if not permissive:
+            ok = False
+        updated = (crate.get("updated_at") or "")[:10]
+        print(f"{name}\t{version}\t{license_}\t{verdict}\tupdated {updated}\t"
+              f"{crate.get('downloads', 0):,} downloads")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_report(args):
+    data = load_or_die()
+    feats, finds = data["features"], data["findings"]
+    done, active, nxt = phase_progress(data)
+    lines = [f"## Rewrite status: {data['app']}", ""]
+    lines.append(f"Source `{data['source']}` -> target `{data['target']}` "
+                 f"({data['kind']}). Phases complete: {done}/{len(PHASES)}"
+                 + (f", in progress: {active}" if active else "") + ".")
+    lines += ["", "### Feature parity matrix", ""]
+    if feats:
+        head = "| # | Feature | Kind | " + " | ".join(
+            f.replace("_", " ") for f in FEATURE_FLAGS) + " | Notes |"
+        lines += [head, "|" + "---|" * (len(FEATURE_FLAGS) + 4)]
+        for f in feats:
+            cells = " | ".join("x" if f["status"][fl] else " " for fl in FEATURE_FLAGS)
+            lines.append(f"| {f['id']} | {f['name']} | {f['kind']} | {cells} | {f['notes']} |")
+    else:
+        lines.append("_No features tracked yet._")
+    lines += ["", "### Findings ledger", ""]
+    if finds:
+        lines += ["| # | Kind | Severity | Decision | Description | Where | Note |",
+                  "|---|---|---|---|---|---|---|"]
+        for f in finds:
+            lines.append(f"| {f['id']} | {f['kind']} | {f['severity']} | **{f['decision']}** "
+                         f"| {f['description']} | {f['where']} | {f['decision_note']} |")
+        fixed = [f for f in finds if f["decision"] == "fix"]
+        if fixed:
+            lines += ["", "Deliberate behavior changes (bugs fixed in the rewrite, "
+                          "e2e parity tests must encode the NEW behavior for these):"]
+            lines += [f"- #{f['id']}: {f['description']}" for f in fixed]
+    else:
+        lines.append("_No findings recorded._")
+    print("\n".join(lines))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="shipwright",
+                                 description="State tracking for agent-driven Rust rewrites")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init", help="start tracking a rewrite (run in the original app's repo)")
+    p.add_argument("--name", required=True, help="app name")
+    p.add_argument("--target", required=True, help="directory for the Rust rewrite (e.g. ../app-rs)")
+    p.add_argument("--kind", required=True,
+                   choices=("api", "cli", "web", "worker", "library", "mixed"))
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_init)
+
+    p = sub.add_parser("status", help="pipeline status")
+    p.add_argument("--format", choices=("human", "context", "json"), default="human")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("phase", help="phase checkpoints")
+    pa = p.add_subparsers(dest="action", required=True)
+    q = pa.add_parser("list")
+    for act in ("start", "complete", "reopen"):
+        q = pa.add_parser(act)
+        q.add_argument("phase")
+        q.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_phase)
+
+    p = sub.add_parser("feature", help="feature parity matrix")
+    pa = p.add_subparsers(dest="action", required=True)
+    q = pa.add_parser("add")
+    q.add_argument("name")
+    q.add_argument("--kind", choices=FEATURE_KINDS, default="behavior")
+    q.add_argument("--notes")
+    q = pa.add_parser("set")
+    q.add_argument("id", type=int)
+    q.add_argument("flag", help="e2e-old|tests-ported|implemented|documented|e2e-new")
+    q.add_argument("value", choices=("on", "off"))
+    q.add_argument("--notes")
+    q = pa.add_parser("list")
+    q.add_argument("--pending", help="only features where this flag is still off")
+    q.add_argument("--format", choices=("human", "json"), default="human")
+    p.set_defaults(fn=cmd_feature)
+
+    p = sub.add_parser("finding", help="bugs / smells / risks ledger")
+    pa = p.add_subparsers(dest="action", required=True)
+    q = pa.add_parser("add")
+    q.add_argument("description")
+    q.add_argument("--kind", choices=FINDING_KINDS, required=True)
+    q.add_argument("--severity", choices=SEVERITIES, default="medium")
+    q.add_argument("--where", help="file:line or module")
+    q.add_argument("--decision", choices=DECISIONS, default="pending")
+    q = pa.add_parser("decide")
+    q.add_argument("id", type=int)
+    q.add_argument("decision", choices=("preserve", "fix"))
+    q.add_argument("--note", help="why — surfaces in reports and docs")
+    q = pa.add_parser("list")
+    q.add_argument("--decision", choices=DECISIONS)
+    q.add_argument("--format", choices=("human", "json"), default="human")
+    p.set_defaults(fn=cmd_finding)
+
+    p = sub.add_parser("crate", help="crate license/version check via crates.io")
+    pa = p.add_subparsers(dest="action", required=True)
+    q = pa.add_parser("check")
+    q.add_argument("names", nargs="+")
+    p.set_defaults(fn=cmd_crate)
+
+    p = sub.add_parser("report", help="markdown report: status, parity matrix, findings")
+    p.set_defaults(fn=cmd_report)
+
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

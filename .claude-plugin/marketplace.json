@@ -16,6 +16,12 @@
       "description": "Docs discipline: clean markdown under ./docs, mermaid for flows/hierarchy, auto link-check after every docs edit.",
       "source": "./scribe",
       "category": "productivity"
+    },
+    {
+      "name": "shipwright",
+      "description": "Rebuild any app in Rust: checkpointed six-phase agent pipeline with feature parity matrix, findings ledger, and cost-tiered subagents.",
+      "source": "./shipwright",
+      "category": "development"
     }
   ]
 }

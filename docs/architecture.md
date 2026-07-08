@@ -12,14 +12,17 @@ flowchart TD
     repo --> docs["docs/ (this documentation)"]
     repo --> mem[memory/]
     repo --> scr[scribe/]
-    mem --> mman[".claude-plugin/plugin.json"]
+    repo --> shp[shipwright/]
     mem --> mbin["bin/memory (CLI)"]
     mem --> mhooks["hooks/ (SessionStart, UserPromptSubmit)"]
     mem --> mskills["skills/ (remember, recall, memory-manage)"]
-    scr --> sman[".claude-plugin/plugin.json"]
     scr --> sbin["bin/check_links (CLI)"]
     scr --> shooks["hooks/ (PostToolUse)"]
     scr --> sskills["skills/ (write-docs, audit-docs)"]
+    shp --> pbin["bin/shipwright (CLI)"]
+    shp --> phooks["hooks/ (SessionStart)"]
+    shp --> pskills["skills/ (status, 6 phases, rust-codestyle)"]
+    shp --> pagents["agents/ (7 cost-tiered subagents)"]
 ```
 
 The marketplace manifest points at each plugin folder (`"source": "./memory"`).
@@ -40,6 +43,9 @@ Every plugin follows the same shape:
   fast and silent when they have nothing to say.
 - `skills/<name>/SKILL.md` — model-facing instructions with trigger
   descriptions in the frontmatter.
+- `agents/<name>.md` (optional) — subagent definitions with a pinned model
+  in the frontmatter, for plugins that fan work out (see shipwright's
+  cost tiers).
 - `README.md` — plugin-level usage documentation.
 
 ## Conventions
@@ -63,3 +69,5 @@ Every plugin follows the same shape:
   auto-recall hooks.
 - [scribe](scribe.md) — documentation discipline: markdown style, mermaid
   diagrams, automatic link checking.
+- [shipwright](shipwright.md) — rebuild any app in Rust: checkpointed
+  six-phase pipeline, parity matrix, findings ledger, cost-tiered subagents.

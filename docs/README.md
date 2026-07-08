@@ -16,3 +16,5 @@ and distributed from this repo, which doubles as a plugin marketplace.
   and vector search, auto-recall hooks, remember/recall skills.
 - [Scribe](scribe.md) — documentation discipline: clean markdown under
   `./docs`, mermaid diagrams, automatic link checking after every docs edit.
+- [Shipwright](shipwright.md) — rebuild any app in Rust: six checkpointed
+  phases, feature parity matrix, findings ledger, cost-tiered subagents.

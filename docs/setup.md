@@ -15,6 +15,7 @@ Add this repo as a plugin marketplace, then install the plugins you want:
 /plugin marketplace add wearethefoos/agentship
 /plugin install memory@agentship
 /plugin install scribe@agentship
+/plugin install shipwright@agentship
 /reload-plugins
 ```
 
@@ -39,6 +40,7 @@ From a clone of this repo:
 ```bash
 ln -s "$(pwd)/memory/bin/memory" ~/.local/bin/memory
 ln -s "$(pwd)/scribe/bin/check_links" ~/.local/bin/check_links
+ln -s "$(pwd)/shipwright/bin/shipwright" ~/.local/bin/shipwright
 ```
 
 ## Developing
