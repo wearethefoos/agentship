@@ -1,6 +1,6 @@
 ---
 name: test-smith
-description: Writes characterization tests (unit and integration) for the shipwright reinforce and parity phases - tests that pin down CURRENT behavior of the original app, in its original language, or e2e parity suites (Bruno, Playwright, bats). All tests must pass before the agent finishes.
+description: Writes characterization tests (unit and integration) for the shipwright reinforce and parity phases - tests that pin down CURRENT behavior of the original app, in its original language, or e2e parity suites (bats, Playwright). All tests must pass before the agent finishes.
 model: sonnet
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: parity
-description: Shipwright phase 3 - build the e2e parity suite that runs identically against the original app and the future Rust port (Bruno for APIs, bats for CLIs, Playwright for web apps), and record golden baselines from the original. Use after reinforce, or when the user says "e2e plan", "parity tests", "golden master".
+description: Shipwright phase 3 - build the e2e parity suite that runs identically against the original app and the future Rust port (bats for APIs and CLIs, Playwright for web apps), and record golden baselines from the original. Use after reinforce, or when the user says "e2e plan", "parity tests", "golden master".
 ---
 
 # Parity — one e2e suite, two implementations
@@ -21,9 +21,12 @@ shipwright status && shipwright phase start parity
 
 ## Harness by app kind
 
-- **api** — [Bruno](https://www.usebruno.com) (MIT) collection under
-  `e2e/bruno/` with environments `original` and `rust` differing only in
-  base URL; run via `bru run --env <env>`.
+- **api** — [bats-core](https://github.com/bats-core/bats-core) (MIT) under
+  `e2e/api/`, scenarios as `curl` + `jq` assertions against `$BASE_URL`;
+  plain shell, so it needs no extra runtime and agents can run and debug it
+  directly. Factor shared request/assertion helpers into a `helpers.bash` so
+  scenarios stay one-screen readable. (A Bruno collection is an acceptable
+  substitute only when the project already maintains one.)
 - **cli** — [bats-core](https://github.com/bats-core/bats-core) (MIT) under
   `e2e/cli/`, binary under test from `$APP_UNDER_TEST`; assert on exact
   stdout/stderr/exit codes (language-agnostic, so it runs against both

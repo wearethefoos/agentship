@@ -16,7 +16,7 @@ before it runs.
 2. `/shipwright:reinforce` — raise unit/integration coverage on the
    original; those tests become the port's specification.
 3. `/shipwright:parity` — one e2e suite that runs against old AND new
-   (Bruno for APIs, bats for CLIs, Playwright for web), baselined on the
+   (bats for APIs and CLIs, Playwright for web), baselined on the
    original.
 4. `/shipwright:blueprint` — you decide preserve-vs-fix for every finding;
    agents research crates (with license checks), design the hexagonal
