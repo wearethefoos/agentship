@@ -1,7 +1,7 @@
 {
   "name": "scribe",
   "description": "Project documentation discipline: clean markdown under ./docs, mermaid diagrams for flows and hierarchy, automatic link checking after every docs edit.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Wouter de Vos"
   },
