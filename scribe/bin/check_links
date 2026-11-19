@@ -36,11 +36,18 @@ MERMAID_TYPES = {
 
 def slugify(heading):
     """GitHub-style heading slug."""
-    text = heading
-    text = re.sub(r"`([^`]*)`", r"\1", text)                    # inline code
-    text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)      # links -> text
-    text = re.sub(r"[*_~]", "", text)                            # emphasis markers
-    text = text.strip().lower()
+    # Inline code is literal: keep its contents as-is, `_privacy` stays _privacy.
+    parts = re.split(r"(`[^`]*`)", heading)
+    for i, part in enumerate(parts):
+        if i % 2:
+            parts[i] = part[1:-1]
+            continue
+        part = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", part)  # links -> text
+        part = re.sub(r"[*~]", "", part)                          # emphasis markers
+        # `_` is emphasis only at a word edge; snake_case keeps its underscores.
+        part = re.sub(r"(?<!\w)_+|_+(?!\w)", "", part)
+        parts[i] = part
+    text = "".join(parts).strip().lower()
     text = re.sub(r"[^\w\- ]", "", text, flags=re.UNICODE)
     return text.replace(" ", "-")
 
